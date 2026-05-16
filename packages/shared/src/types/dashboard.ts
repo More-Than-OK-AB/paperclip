@@ -6,6 +6,30 @@ export interface DashboardRunActivityDay {
   total: number;
 }
 
+export interface DashboardRunBreakdownByIssue {
+  issueId: string;
+  identifier: string;
+  runs: number;
+}
+
+export interface DashboardRunBreakdownByWakeReason {
+  reason: string;
+  runs: number;
+}
+
+export interface DashboardRunBreakdownByAgent {
+  agentId: string;
+  name: string;
+  runs: number;
+}
+
+export interface DashboardRunBreakdown {
+  date: string;
+  byIssue: DashboardRunBreakdownByIssue[];
+  byWakeReason: DashboardRunBreakdownByWakeReason[];
+  byAgent: DashboardRunBreakdownByAgent[];
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -33,4 +57,5 @@ export interface DashboardSummary {
     pausedProjects: number;
   };
   runActivity: DashboardRunActivityDay[];
+  runBreakdown?: DashboardRunBreakdown;
 }
