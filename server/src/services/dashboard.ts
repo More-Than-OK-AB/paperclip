@@ -1,8 +1,9 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
+import type { DashboardRunBreakdown } from "@paperclipai/shared";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -22,10 +23,84 @@ function getRecentUtcDateKeys(now: Date, days: number): string[] {
   });
 }
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function runBreakdownForDate(
+  db: Db,
+  companyId: string,
+  date: string,
+): Promise<DashboardRunBreakdown> {
+  const dayExpr = sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
+  const dateFilter = and(eq(heartbeatRuns.companyId, companyId), sql`${dayExpr} = ${date}`);
+
+  const issueIdExpr = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+  const wakeReasonExpr = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`;
+
+  const [byIssueRows, byWakeReasonRows, byAgentRows] = await Promise.all([
+    db
+      .select({
+        issueId: issueIdExpr.as("issueId"),
+        identifier: issues.identifier,
+        runs: sql<number>`count(*)::double precision`,
+      })
+      .from(heartbeatRuns)
+      .leftJoin(
+        issues,
+        sql`${issues.id} = (${heartbeatRuns.contextSnapshot} ->> 'issueId')::uuid`,
+      )
+      .where(and(dateFilter, isNotNull(issueIdExpr)))
+      .groupBy(issueIdExpr, issues.identifier)
+      .orderBy(sql`count(*) desc`),
+
+    db
+      .select({
+        reason: wakeReasonExpr.as("reason"),
+        runs: sql<number>`count(*)::double precision`,
+      })
+      .from(heartbeatRuns)
+      .where(and(dateFilter, isNotNull(wakeReasonExpr)))
+      .groupBy(wakeReasonExpr)
+      .orderBy(sql`count(*) desc`),
+
+    db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        name: agents.name,
+        runs: sql<number>`count(*)::double precision`,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(dateFilter)
+      .groupBy(heartbeatRuns.agentId, agents.name)
+      .orderBy(sql`count(*) desc`),
+  ]);
+
+  return {
+    date,
+    byIssue: byIssueRows
+      .filter((r) => r.issueId != null)
+      .map((r) => ({
+        issueId: r.issueId as string,
+        identifier: r.identifier ?? r.issueId ?? "",
+        runs: Number(r.runs),
+      })),
+    byWakeReason: byWakeReasonRows
+      .filter((r) => r.reason != null)
+      .map((r) => ({ reason: r.reason as string, runs: Number(r.runs) })),
+    byAgent: byAgentRows.map((r) => ({
+      agentId: r.agentId,
+      name: r.name,
+      runs: Number(r.runs),
+    })),
+  };
+}
+
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
   return {
-    summary: async (companyId: string) => {
+    summary: async (companyId: string, opts?: { date?: string }) => {
+      const breakdownDate =
+        opts?.date && ISO_DATE_RE.test(opts.date) ? opts.date : undefined;
       const company = await db
         .select()
         .from(companies)
@@ -132,7 +207,10 @@ export function dashboardService(db: Db) {
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
-      const budgetOverview = await budgets.overview(companyId);
+      const [budgetOverview, runBreakdown] = await Promise.all([
+        budgets.overview(companyId),
+        breakdownDate ? runBreakdownForDate(db, companyId, breakdownDate) : undefined,
+      ]);
 
       return {
         companyId,
@@ -156,6 +234,7 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        ...(runBreakdown ? { runBreakdown } : {}),
       };
     },
   };
