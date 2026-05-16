@@ -21,6 +21,7 @@ export const agentWakeupRequests = pgTable(
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    fireAt: timestamp("fire_at", { withTimezone: true }),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -36,5 +37,9 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    pendingDebounceFireIdx: index("agent_wakeup_requests_pending_debounce_fire_idx").on(
+      table.status,
+      table.fireAt,
+    ),
   }),
 );

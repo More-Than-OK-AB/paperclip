@@ -199,6 +199,8 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const COMMENT_DEBOUNCE_REASONS = new Set(["issue_commented", "issue_comment_mentioned"]);
+const COMMENT_DEBOUNCE_WINDOW_MS = 2 * 60 * 1000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -967,6 +969,7 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  skipCommentDebounce?: boolean;
 }
 
 type UsageTotals = {
@@ -5541,6 +5544,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  async function promoteDueCommentDebounces(now = new Date()) {
+    const due = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "pending_comment_debounce"),
+          lte(agentWakeupRequests.fireAt, now),
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.fireAt), asc(agentWakeupRequests.createdAt))
+      .limit(50);
+
+    let promoted = 0;
+
+    for (const record of due) {
+      const claimed = await db
+        .update(agentWakeupRequests)
+        .set({ status: "completed", finishedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, record.id),
+            eq(agentWakeupRequests.status, "pending_comment_debounce"),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!claimed) continue;
+
+      try {
+        const storedPayload = parseObject(claimed.payload);
+        const storedContext = parseObject(storedPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+        const promotedPayload = { ...storedPayload };
+        delete promotedPayload[DEFERRED_WAKE_CONTEXT_KEY];
+
+        await enqueueWakeup(claimed.agentId, {
+          source: (claimed.source as WakeupOptions["source"]) ?? "automation",
+          triggerDetail: (claimed.triggerDetail as WakeupOptions["triggerDetail"]) ?? undefined,
+          reason: claimed.reason ?? undefined,
+          payload: Object.keys(promotedPayload).length > 0 ? promotedPayload : undefined,
+          contextSnapshot: storedContext,
+          requestedByActorType: (claimed.requestedByActorType as WakeupOptions["requestedByActorType"]) ?? undefined,
+          requestedByActorId: claimed.requestedByActorId ?? undefined,
+          skipCommentDebounce: true,
+        });
+
+        promoted++;
+      } catch (err) {
+        await db
+          .update(agentWakeupRequests)
+          .set({ status: "failed", finishedAt: now, error: String(err), updatedAt: now })
+          .where(eq(agentWakeupRequests.id, claimed.id));
+      }
+    }
+
+    return { promoted };
+  }
+
   async function getIssueRetryRun(
     companyId: string,
     issueId: string,
@@ -8717,6 +8779,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    if (issueId && COMMENT_DEBOUNCE_REASONS.has(reason ?? "") && !opts.skipCommentDebounce) {
+      const fireAt = new Date(Date.now() + COMMENT_DEBOUNCE_WINDOW_MS);
+      await db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.status, "pending_comment_debounce"),
+              eq(agentWakeupRequests.reason, reason ?? ""),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (existing) {
+          const existingContext = parseObject(parseObject(existing.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
+          const mergedContext = mergeCoalescedContextSnapshot(existingContext, enrichedContextSnapshot);
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              payload: { ...parseObject(existing.payload), [DEFERRED_WAKE_CONTEXT_KEY]: mergedContext },
+              fireAt,
+              coalescedCount: (existing.coalescedCount ?? 0) + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, existing.id));
+        } else {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason,
+            payload: {
+              ...(payload ?? {}),
+              issueId,
+              [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
+            },
+            status: "pending_comment_debounce",
+            fireAt,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+          });
+        }
+      });
+      return null;
+    }
+
     if (issueId) {
       // Mention-triggered wakes can request input from another agent, but they must
       // still respect the issue execution lock so a second agent cannot start on the
@@ -9721,6 +9836,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reapOrphanedRuns,
 
     promoteDueScheduledRetries,
+    promoteDueCommentDebounces,
     retryScheduledRetryNow,
 
     resumeQueuedRuns,

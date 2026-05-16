@@ -741,6 +741,10 @@ export async function startServer(): Promise<StartedServer> {
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
+      void heartbeat.promoteDueCommentDebounces().catch((err) => {
+        logger.error({ err }, "comment debounce promotion failed");
+      });
+
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.promoteDueScheduledRetries())
