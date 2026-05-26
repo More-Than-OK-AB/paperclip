@@ -76,3 +76,7 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { companyQuotaPolicies } from "./company_quota_policies.js";
+export { companyUsageReports } from "./company_usage_reports.js";
+export { companyFreezes } from "./company_freezes.js";
+export { companyFreezeEvents } from "./company_freeze_events.js";

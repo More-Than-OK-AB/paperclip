@@ -1,6 +1,7 @@
 import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+import { companyFreezes } from "./company_freezes.js";
 
 export const agentWakeupRequests = pgTable(
   "agent_wakeup_requests",
@@ -22,6 +23,7 @@ export const agentWakeupRequests = pgTable(
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
+    freezeGatedBy: uuid("freeze_gated_by").references(() => companyFreezes.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

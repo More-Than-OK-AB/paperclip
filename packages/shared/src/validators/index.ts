@@ -437,3 +437,15 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+export {
+  declareFreezeSchema,
+  liftFreezeSchema,
+  putQuotaPolicySchema,
+  postUsageReportSchema,
+  FREEZE_SCOPES,
+  FREEZE_EVENT_TYPES,
+  type DeclareFreeze,
+  type LiftFreeze,
+  type PutQuotaPolicy,
+  type PostUsageReport,
+} from "./company-freeze.js";

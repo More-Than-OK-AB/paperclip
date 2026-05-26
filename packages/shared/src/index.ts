@@ -1122,3 +1122,15 @@ export type {
   EnvironmentProviderCapability,
   EnvironmentSupportStatus,
 } from "./environment-support.js";
+export {
+  declareFreezeSchema,
+  liftFreezeSchema,
+  putQuotaPolicySchema,
+  postUsageReportSchema,
+  FREEZE_SCOPES,
+  FREEZE_EVENT_TYPES,
+  type DeclareFreeze,
+  type LiftFreeze,
+  type PutQuotaPolicy,
+  type PostUsageReport,
+} from "./validators/company-freeze.js";

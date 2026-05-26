@@ -1,5 +1,8 @@
 export { healthRoutes } from "./health.js";
 export { companyRoutes } from "./companies.js";
+export { companyFreezeRoutes } from "./company-freeze.js";
+export { companyQuotaPolicyRoutes } from "./company-quota-policy.js";
+export { companyUsageRoutes } from "./company-usage.js";
 export { companySkillRoutes } from "./company-skills.js";
 export { agentRoutes } from "./agents.js";
 export { projectRoutes } from "./projects.js";

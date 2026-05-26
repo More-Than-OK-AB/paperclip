@@ -121,6 +121,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { companyFreezeService } from "./company-freeze.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -2337,6 +2338,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const freezeSvc = companyFreezeService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
@@ -8588,7 +8590,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
-    const writeSkippedRequest = async (skipReason: string) => {
+    const writeSkippedRequest = async (skipReason: string, extras: { freezeGatedBy?: string } = {}) => {
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
@@ -8600,6 +8602,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
+        freezeGatedBy: extras.freezeGatedBy ?? null,
         finishedAt: new Date(),
       });
     };
@@ -8657,6 +8660,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent.status === "pending_approval"
     ) {
       throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    }
+
+    const freezeCheck = await freezeSvc.isAgentFrozen(agent.companyId, agent.role, agent.id);
+    if (freezeCheck.frozen) {
+      await writeSkippedRequest("company_freeze_active", { freezeGatedBy: freezeCheck.freezeId });
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId,
+        runId: null,
+        action: "agent.wake_gated_by_freeze",
+        entityType: "agent",
+        entityId: agentId,
+        details: {
+          freezeId: freezeCheck.freezeId,
+          agentRole: agent.role,
+          requestedReason: reason,
+          source,
+          triggerDetail,
+        },
+      });
+      return null;
     }
 
     const policy = parseHeartbeatPolicy(agent);
